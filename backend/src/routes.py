@@ -6,7 +6,7 @@ from .models import *
 from .schemas import *
 from .auth import current,editor,supervisor,issue,password_hash
 from .common import dump
-from . import catalog_service as catalog,isolation_service as isolation,risk_service as risk,treatment_service as treatment,grant_service as grant,handover_service as handovers
+from . import catalog_service as catalog,isolation_service as isolation,risk_service as risk,treatment_service as treatment,grant_service as grant,handover_service as handovers,training_service as training
 router=APIRouter()
 @router.post('/auth/login')
 def login(data:Login,db=Depends(session)):
@@ -15,7 +15,7 @@ def login(data:Login,db=Depends(session)):
     return {'token':issue(user),'username':user.username,'role':user.role}
 @router.get('/workspace')
 def workspace(db=Depends(session),user=Depends(current)):
-    models=[Accession,Observation,Cabinet,Isolation,RiskAssessment,Treatment,Step,Grant,Encumbrance,Handover]
+    models=[Accession,Observation,Cabinet,Isolation,RiskAssessment,Treatment,Step,Grant,Encumbrance,Handover,TrainingRun,ModelVersion,SampleWithdrawal]
     return {m.__tablename__:[dump(v) for v in db.scalars(select(m).order_by(m.id))] for m in models}
 @router.get('/audit')
 def audits(db=Depends(session),user=Depends(supervisor)):return [dump(v) for v in db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100))]
@@ -31,6 +31,16 @@ def admit(data:AdmitInput,db=Depends(session),user=Depends(editor)):return isola
 def assess(data:RiskInput,db=Depends(session),user=Depends(editor)):return risk.request_risk(db,data,user)
 @router.post('/risks/{id}/review')
 def review(id:int,data:ReviewInput,db=Depends(session),user=Depends(supervisor)):return risk.review(db,id,data,user)
+@router.post('/risks/{id}/withdraw')
+def withdraw(id:int,data:WithdrawInput,db=Depends(session),user=Depends(supervisor)):return training.withdraw(db,id,data,user)
+@router.post('/training')
+def train(data:TrainingInput,db=Depends(session),user=Depends(supervisor)):return training.start(db,data,user)
+@router.post('/training/{id}/retry')
+def retrain(id:int,db=Depends(session),user=Depends(supervisor)):return training.retry(db,id,user)
+@router.get('/training/{id}')
+def training_run(id:int,db=Depends(session),user=Depends(supervisor)):return training.run_detail(db,id)
+@router.get('/versions/{id}')
+def version(id:int,db=Depends(session),user=Depends(supervisor)):return training.version_detail(db,id)
 @router.post('/treatments')
 def propose(data:TreatmentInput,db=Depends(session),user=Depends(supervisor)):return treatment.propose(db,data,user)
 @router.patch('/treatments/{id}')

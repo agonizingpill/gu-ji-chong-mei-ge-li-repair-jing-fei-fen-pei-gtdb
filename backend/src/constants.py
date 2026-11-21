@@ -13,3 +13,17 @@ class PlanState(StrEnum):
     funded='funded'
     completed='completed'
     cancelled='cancelled'
+class RiskState(StrEnum):
+    queued='queued'
+    running='running'
+    done='done'
+    reviewed='reviewed'
+    failed='failed'
+class RunState(StrEnum):
+    queued='queued'
+    running='running'
+    completed='completed'
+    failed='failed'
+class VersionState(StrEnum):
+    active='active'
+    voided='voided'

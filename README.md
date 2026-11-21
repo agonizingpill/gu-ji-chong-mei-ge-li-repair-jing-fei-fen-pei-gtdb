@@ -8,7 +8,7 @@
 
 1. 入藏册件：唯一馆藏号、书名、年代、纸张；追加病害观测保留历史。已出柜卷册需重新入柜才能录入病害。
 2. 隔离柜：同册只允许一个在柜位置，柜位满时拒绝入柜。出柜释放位置并保存出柜时间。
-3. 风险分级：Redis 排队、Python worker 执行决策树、主管复核；开工和交接只接受最新观测的复核。
+3. 风险分级：Redis 排队、Python worker 执行决策树、主管复核；开工和交接只接受最新观测的复核。风险页可由主管用复核样本训练决策树、查看留出成绩与模型版本状态；训练样本按册整组，撤回与版本入库并发时先办成的撤回使该版本作废。
 4. 修复工序：方案依序建立工序依赖，资金未占用不得施工；前置工序未完成不可跳步；未施工方案撤销后可修订恢复。
 5. 专项经费：预算、占用、实付分别记录；行锁保障并发不超支；撤销返还占款，核销不得超过已占金额。
 6. 出柜借展：霉面积为 0、含水≤60%、最新低风险复核、工序及经费完成才准出柜；先交库房才准借展。
@@ -45,9 +45,11 @@ docker compose exec backend python -m src.seed
 
 ## 算法与数据口径
 
-`backend/src/algorithm.py` 以纸张含水、虫孔数、霉面积三个输入特征运行 `DecisionTreeClassifier(max_depth=5, min_samples_leaf=4, random_state=31)`。固定 seed 生成 600 条专家规则合成样本，按标签分层分出 450 训练 / 150 留出；worker 实算宏 F1、混淆矩阵（行实际 / 列预测，低中高顺序）与数据 SHA256，并写入数据库和共享 artifacts 卷。worker 不在 HTTP 请求内运行，Redis 队列和心跳文件均实际存在。
+`backend/src/algorithm.py` 既保留 `classify` 的日常分级检查，也提供整册分组的训练入口。日常分级仍以纸张含水、虫孔数、霉面积三个输入特征运行 `DecisionTreeClassifier(max_depth=5, min_samples_leaf=4, random_state=31)`，固定 seed 生成 600 条专家规则合成样本并分层留出，worker 实算宏 F1、混淆矩阵（行实际 / 列预测，低中高顺序）与数据 SHA256。合成样本用于内部可复现检查，不代表真实文保预测效果。
 
-合成样本用于内部可复现检查，不代表真实文保预测效果。现场主管保留最终复核权。观测不存在、未隔离、旧观测复核、预算不足、工序不完及病害未清均是独立业务拒绝条件。后台运行失败记录 `failed` 和原因，修复输入后重新提交分级。
+主管复核样本可在风险页发起训练：只取每位复核观测的最新一条复核，已撤回样本不进入新批次。所有样本按馆藏号整册分组，同一册历次测量只进入训练或留出之一；`algorithm.group_split` 以 seed 打乱册序后按样本数接近 `test_size` 切分，确保整册不跨组。开训时把样本快照与分组写入 `training_samples` 并记 `snapshot_sha256`，之后追加复测或复核不改变该批次。worker 从 `folio:train` 队列消费，中断后由心跳扫描或主管“续跑”从原封存分组继续，不重算分组；同一封存样本重复发起复用原批次，已入库批次不得重复登记模型版本。
+
+版本入库写入 `model_versions` 与 `version_samples`，保留开训时原样本供追查。样本撤回与版本入库都先锁对应卷册，撤回先提交时随后入库的版本标为 `voided` 并记录原因，已入库版本不受后续撤回影响。现场主管保留最终复核权。观测不存在、未隔离、旧观测复核、预算不足、工序不完及病害未清均是独立业务拒绝条件。后台运行失败记录 `failed` 和原因，修复输入后可从原批次续跑或重新提交分级。
 
 ## 技术结构
 
@@ -57,13 +59,13 @@ docker compose exec backend python -m src.seed
 | 后端 | Python 3.12 / FastAPI，SQLAlchemy，Pydantic 参数与数据库双重约束 |
 | 数据 | PostgreSQL 16，Redis 7 队列，独立命名卷 |
 | 认证与追踪 | JWT 三角色、动作审计、请求追踪与突发请求限制中间件 |
-| ML | NumPy / scikit-learn 决策树、分层留出评估 |
+| ML | NumPy / scikit-learn 决策树、整册分组留出评估、版本快照 |
 
-`backend/src/models.py` 是关系模型，`schemas.py` 是输入契约；`catalog_service.py`、`isolation_service.py`、`risk_service.py`、`treatment_service.py`、`grant_service.py`、`handover_service.py` 分别维护六模块约束，`routes.py` 只映射权限和业务调用。建表在首次启动创建，适合独立演示库。
+`backend/src/models.py` 是关系模型，`schemas.py` 是输入契约；`catalog_service.py`、`isolation_service.py`、`risk_service.py`、`treatment_service.py`、`grant_service.py`、`handover_service.py`、`training_service.py` 分别维护各模块约束，`routes.py` 只映射权限和业务调用。建表在首次启动创建，适合独立演示库。
 
 `frontend/src/pages/` 对应六模块；`components/folio-index.js` 复用卷册索引和选择器，`ledger.js` 复用表格与表单字段，`steps.js` 绘制真实工序依赖。`api/client.js` 统一请求，`stores/workspace.js` 持有会话与卷宗，`utils/format.js` 和 `utils/forms.js` 分别处理展示和可恢复表单状态。双字体是 Noto Serif SC 与 Noto Sans SC；网络不通时浏览器使用 serif / sans-serif 回退。
 
-共享枚举：后端 `backend/src/constants.py` 的 Role/FolioState/PlanState，分别在 seed 和模型默认值引用；前端 `frontend/src/constants/enums.js` 的 roles/folioStates/planStates 由外壳和页面引用。状态值逐一对应：operator/supervisor/viewer；registered/isolated/repair/released；draft/funded/completed/cancelled。风险值 low/medium/high 在算法与前端等级标签中一致。
+共享枚举：后端 `backend/src/constants.py` 的 Role/FolioState/PlanState，分别在 seed 和模型默认值引用；风险与训练状态（RiskState/RunState/VersionState）同样在此登记。前端 `frontend/src/constants/enums.js` 的 roles/folioStates/planStates/runStates/versionStates 由外壳和页面引用。状态值逐一对应：operator/supervisor/viewer；registered/isolated/repair/released；draft/funded/completed/cancelled；queued/running/completed/failed；active/voided。风险值 low/medium/high 在算法与前端等级标签中一致。
 
 ## 配置与开发
 
@@ -80,6 +82,6 @@ docker compose down -v --remove-orphans
 
 ## 已知范围
 
-当前单所业务，工序为有序依赖链；已开始施工的方案不能撤销，追加费用需要另行方案。借展提供放行与一次交接记录，尚未涵盖展期运输、归还登记、真实财务支付与硬件湿度采集。没有真实馆藏训练集、外部效度验证或临床式保证。初始化采用 create_all，无历史版本迁移链。
+当前单所业务，工序为有序依赖链；已开始施工的方案不能撤销，追加费用需要另行方案。借展提供放行与一次交接记录，尚未涵盖展期运输、归还登记、真实财务支付与硬件湿度采集。训练使用主管复核样本与整册分组留出，样本量受复核记录限制，尚无真实馆藏外部验证或临床式保证；线上日常分级仍走固定的合成样本检查。初始化采用 create_all，无历史版本迁移链。
 
 License: MIT，见 LICENSE。

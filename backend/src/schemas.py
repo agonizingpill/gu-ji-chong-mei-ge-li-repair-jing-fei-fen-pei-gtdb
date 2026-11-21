@@ -47,3 +47,8 @@ class HandoverInput(BaseModel):
     kind:str=Field(pattern='^(storage|exhibition)$')
     recipient:str=Field(min_length=2,max_length=100)
     note:str=Field(min_length=2,max_length=200)
+class WithdrawInput(BaseModel):
+    note:str=Field(min_length=2,max_length=200)
+class TrainingInput(BaseModel):
+    seed:int=Field(default=31,ge=0,le=1000000)
+    test_size:float=Field(default=0.25,gt=0,lt=1)
